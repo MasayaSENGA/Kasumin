@@ -7,11 +7,23 @@ import logging
 import os
 import socket
 import sys
-from typing import Optional, Sequence
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from . import __version__
 
+if TYPE_CHECKING:
+    from .auth import Fido2Auth
+
 log = logging.getLogger("kasumin")
+
+
+def default_data_dir() -> Path:
+    """登録済みのキーなどを保存するフォルダ。Windows では %LOCALAPPDATA%\\Kasumin。"""
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Kasumin"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "kasumin"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +45,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--password",
         default=os.environ.get("KASUMIN_PASSWORD"),
         help="Basic 認証のパスワード。指定すると認証が有効になる (環境変数 KASUMIN_PASSWORD でも指定可)",
+    )
+    net.add_argument("--tls-cert", metavar="PEM", help="HTTPS で待ち受けるための証明書ファイル (中間証明書を含むもの)")
+    net.add_argument("--tls-key", metavar="PEM", help="証明書の秘密鍵ファイル (証明書ファイルに含まれていれば不要)")
+
+    remote = parser.add_argument_group("LAN 外からのアクセス (FIDO2 認証)")
+    remote.add_argument(
+        "--public-url",
+        metavar="URL",
+        help="LAN 外から開くときの URL (例: https://cam.example.com)。"
+        "指定するとパスキー / セキュリティキーによる FIDO2 認証が有効になる",
+    )
+    remote.add_argument(
+        "--setup-link", action="store_true", help="キーが登録済みでも、新しいキーの登録リンクを表示する (キーをなくしたときなど)"
+    )
+    remote.add_argument("--session-days", type=float, default=7, metavar="DAYS", help="ブラウザのログイン状態を保つ日数")
+    remote.add_argument(
+        "--user-verification",
+        choices=["required", "preferred"],
+        default="required",
+        help="キーの PIN / 生体認証を必須にするか。preferred にすると PIN 未設定のセキュリティキーでもログインできる",
+    )
+    remote.add_argument(
+        "--data-dir", default=str(default_data_dir()), metavar="DIR", help="登録済みのキーとアクセストークンの保存先"
     )
 
     cam = parser.add_argument_group("カメラ")
@@ -89,28 +124,65 @@ def _format_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
-def _print_banner(host: str, port: int, auth_enabled: bool) -> None:
+def _is_loopback_host(host: str) -> bool:
+    return host in ("localhost", "::1") or host.startswith("127.")
+
+
+def _print_banner(
+    host: str,
+    port: int,
+    auth_enabled: bool,
+    *,
+    tls: bool = False,
+    fido2: Optional[Fido2Auth] = None,
+    setup: Optional[tuple[str, float]] = None,
+) -> None:
+    scheme = "https" if tls else "http"
     if host in ("0.0.0.0", "", "::"):
         hosts = ["127.0.0.1", *local_addresses()]
-    elif host in ("localhost", "127.0.0.1", "::1"):
+    elif _is_loopback_host(host):
         hosts = ["127.0.0.1"]
     else:
         hosts = [host]
-    primary = _format_host(hosts[-1])
+    urls = [f"{scheme}://{_format_host(h)}:{port}" for h in hosts]
 
-    lines = ["", f"Kasumin v{__version__} - ネットワークカメラを起動しました", "", "  ブラウザで開く:"]
-    lines += [f"    http://{_format_host(h)}:{port}/" for h in hosts]
-    lines += [
-        "",
-        f"  MJPEG ストリーム : http://{primary}:{port}/stream",
-        f"  スナップショット : http://{primary}:{port}/snapshot.jpg",
-        f"  ステータス (JSON): http://{primary}:{port}/api/status",
-        "",
-        "  Basic 認証: " + ("有効" if auth_enabled else "無効 (--password で有効にできます)"),
-        "",
-        "  終了するには Ctrl+C を押してください",
-        "",
-    ]
+    lines = ["", f"Kasumin v{__version__} - ネットワークカメラを起動しました", ""]
+    if fido2 is None:
+        lines += ["  ブラウザで開く:", *(f"    {url}/" for url in urls)]
+        lines += [
+            "",
+            f"  MJPEG ストリーム : {urls[-1]}/stream",
+            f"  スナップショット : {urls[-1]}/snapshot.jpg",
+            f"  ステータス (JSON): {urls[-1]}/api/status",
+            "",
+            "  Basic 認証: " + ("有効" if auth_enabled else "無効 (--password で有効にできます)"),
+        ]
+    else:
+        public = fido2.origin.origin
+        active, other = fido2.credential_count()
+        lines += [
+            f"  ブラウザで開く : {public}/",
+            f"  待ち受け       : {', '.join(urls)}",
+            f"  認証           : FIDO2 (パスキー / セキュリティキー)  登録済みのキー {active} 個",
+            f"  キーの保存先   : {fido2.path}",
+        ]
+        if other:
+            lines.append(f"  ※ 別のホスト名用に登録したキーが {other} 個あります (この URL では使えません)")
+        if setup is not None:
+            url, expires = setup
+            lines += [
+                "",
+                "  【キーの登録】次の URL をブラウザで開いて、パスキーまたはセキュリティキーを登録してください",
+                f"  ({time.strftime('%H:%M', time.localtime(expires))} まで有効・1 回限り。この URL は他の人に見せないでください)",
+                f"    {url}",
+            ]
+        lines += [
+            "",
+            "  VLC・OBS・Home Assistant などのアプリからは、ログイン後の「設定」で発行する",
+            "  アクセストークンを付けて接続します:",
+            f"    {public}/stream?token=<アクセストークン>",
+        ]
+    lines += ["", "  終了するには Ctrl+C を押してください", ""]
     print("\n".join(lines), flush=True)
 
 
@@ -156,6 +228,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.verbose:
         # 存在しないインデックスの探索などで出る OpenCV の警告を抑える
         os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+        # fido2 ライブラリは登録・認証のたびに credential ID を INFO で出し、Kasumin 自身のログと重複するので抑える
+        logging.getLogger("fido2").setLevel(logging.WARNING)
 
     if args.list_cameras:
         return _list_cameras(args.backend)
@@ -166,6 +240,64 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--fourcc は 4 文字で指定してください (例: MJPG)")
     if args.idle_timeout < 0:
         parser.error("--idle-timeout は 0 以上で指定してください")
+    if args.session_days <= 0:
+        parser.error("--session-days は 0 より大きい値で指定してください")
+    if args.tls_key and not args.tls_cert:
+        parser.error("--tls-key は --tls-cert と一緒に指定してください")
+    if args.setup_link and not args.public_url:
+        parser.error("--setup-link は --public-url と一緒に指定してください")
+    if args.public_url and args.password:
+        parser.error(
+            "--public-url (FIDO2 認証) と --password (Basic 認証) は同時に使えません。"
+            "アプリからの接続には、ログイン後の「設定」で発行するアクセストークンを使ってください"
+            " (環境変数 KASUMIN_PASSWORD を設定している場合は削除してください)"
+        )
+
+    fido2 = None
+    if args.public_url:
+        try:
+            from .auth import Fido2Auth, parse_public_url
+        except ImportError as exc:
+            log.error(
+                "FIDO2 認証に必要なパッケージがありません (%s)。start.bat を実行し直すか、"
+                "pip install -r requirements.txt を実行してください",
+                exc,
+            )
+            return 1
+        try:
+            origin = parse_public_url(args.public_url)
+        except ValueError as exc:
+            parser.error(f"--public-url: {exc}")
+        if args.tls_cert and not origin.secure:
+            parser.error("--tls-cert を使う場合、--public-url は https:// で指定してください")
+        try:
+            fido2 = Fido2Auth(
+                origin,
+                Path(args.data_dir) / "auth.json",
+                session_ttl=args.session_days * 86400,
+                user_verification=args.user_verification,
+            )
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 1
+
+    tls = None
+    if args.tls_cert:
+        from .tls import TLSConfig
+
+        try:
+            tls = TLSConfig(args.tls_cert, args.tls_key)
+        except OSError as exc:  # ssl.SSLError を含む
+            log.error("証明書を読み込めません: %s", exc)
+            return 1
+
+    if fido2 is not None and fido2.origin.secure and tls is None and not _is_loopback_host(args.host):
+        log.warning(
+            "このサーバーは HTTP (暗号化なし) で %s:%d に公開されています。HTTPS を同じ PC のトンネル /"
+            " リバースプロキシで終端するなら、--host 127.0.0.1 を指定して LAN からの直接接続を閉じることを推奨します",
+            args.host,
+            args.port,
+        )
 
     from .camera import Camera, CameraSettings
     from .server import KasuminServer
@@ -188,13 +320,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     camera = Camera(settings)
     camera.start()
     try:
-        server = KasuminServer(args.host, args.port, camera, auth)
+        server = KasuminServer(args.host, args.port, camera, auth, fido2=fido2, tls=tls)
     except OSError as exc:
         log.error("%s:%d で待ち受けできません: %s", args.host, args.port, exc)
         camera.stop()
         return 1
 
-    _print_banner(args.host, args.port, auth is not None)
+    setup = None
+    if fido2 is not None and (args.setup_link or not fido2.has_credentials()):
+        setup = fido2.create_setup_link()
+    _print_banner(args.host, args.port, auth is not None, tls=tls is not None, fido2=fido2, setup=setup)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -203,6 +338,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     finally:
         server.server_close()
         camera.stop()
+        if fido2 is not None:
+            fido2.close()
     return 0
 
 

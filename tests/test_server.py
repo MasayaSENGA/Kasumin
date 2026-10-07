@@ -88,6 +88,21 @@ class ServerTest(ServerBase):
             self.assertIn("text/html", res.headers["Content-Type"])
             self.assertIn(b"Kasumin", res.read())
 
+    def test_static_files(self):
+        for path in ("/static/kasumin.css", "/static/viewer.js"):
+            with self.get(path) as res:
+                self.assertEqual(res.status, 200)
+                self.assertEqual(res.headers["X-Content-Type-Options"], "nosniff")
+        with self.get("/") as res:
+            self.assertIn("script-src 'self'", res.headers["Content-Security-Policy"])
+
+    def test_login_pages_need_fido2(self):
+        for path in ("/login", "/settings", "/api/auth/state"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.get(path)
+            self.assertEqual(ctx.exception.code, 404)
+            ctx.exception.close()
+
     def test_status(self):
         self.assertTrue(wait_until(lambda: self.camera.status()["opened"]))
         with self.get("/api/status") as res:
@@ -95,6 +110,7 @@ class ServerTest(ServerBase):
         self.assertTrue(data["opened"])
         self.assertEqual((data["width"], data["height"]), (160, 120))
         self.assertEqual(data["backend"], "fake")
+        self.assertEqual(data["auth_mode"], "none")
 
     def test_snapshot_is_jpeg(self):
         with self.get("/snapshot.jpg") as res:
@@ -143,6 +159,7 @@ class AuthTest(ServerBase):
         token = base64.b64encode(b"user:pass").decode()
         with self.get("/api/status", {"Authorization": f"Basic {token}"}) as res:
             self.assertEqual(res.status, 200)
+            self.assertEqual(json.loads(res.read())["auth_mode"], "basic")
 
 
 class NoSignalTest(ServerBase):

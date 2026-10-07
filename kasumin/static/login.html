@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kasumin ログイン</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='20' height='16' rx='4' fill='%234f8cff'/%3E%3Cpath d='M22 13l8-4v14l-8-4z' fill='%234f8cff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/kasumin.css">
+<script src="/static/auth.js" defer></script>
+<script src="/static/login.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>Kasumin</h1>
+</header>
+<main>
+  <section class="card">
+    <h2 id="title">ログイン</h2>
+    <p id="lead">登録済みのパスキーまたはセキュリティキーでログインします。</p>
+    <div class="field" id="nameField" hidden>
+      <label for="keyName">このキーの名前 (一覧で見分けるため)</label>
+      <input id="keyName" type="text" maxlength="40" autocomplete="off" placeholder="例: iPhone、YubiKey">
+    </div>
+    <button id="btnGo" class="primary wide" type="button" disabled>パスキーでログイン</button>
+    <p class="msg" id="msg" role="status"></p>
+  </section>
+</main>
+</body>
+</html>

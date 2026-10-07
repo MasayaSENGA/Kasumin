@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# HTTPS の証明書と秘密鍵 (--tls-cert / --tls-key) を誤ってコミットしないように
+*.pem
+*.key
+*.pfx

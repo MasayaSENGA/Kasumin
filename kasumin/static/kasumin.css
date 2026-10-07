@@ -1,0 +1,108 @@
+:root {
+  --bg: #0f1115; --panel: #181b22; --border: #262b36;
+  --text: #e6e8ee; --muted: #8b93a7; --accent: #4f8cff;
+  --ok: #3ddc84; --ng: #ff5c5c; --well: #0b0d12;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+}
+a { color: var(--accent); }
+header {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+header h1 a { color: inherit; text-decoration: none; }
+header nav { display: flex; gap: 8px; margin-left: auto; }
+header nav .button, header nav button { padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ng); box-shadow: 0 0 8px var(--ng); }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.stats { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.stats + nav { margin-left: 0; }
+@media (max-width: 640px) {
+  /* スマホでは解像度や fps の表示を 2 行目に回し、ボタンの場所を空ける */
+  header { flex-wrap: wrap; row-gap: 4px; }
+  .stats { order: 1; flex-basis: 100%; margin-left: 0; text-align: left; font-size: 12px; }
+  .stats + nav { margin-left: auto; }
+}
+main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+.viewer { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; }
+.viewer img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.viewer:fullscreen { border-radius: 0; }
+.overlay {
+  position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 16px; background: rgba(0, 0, 0, .75); color: var(--muted); text-align: center;
+}
+.overlay.show { display: flex; }
+.overlay strong { color: var(--text); font-size: 18px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+button, select, .button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer;
+  text-decoration: none; display: inline-block; line-height: normal;
+}
+button:hover, select:hover, .button:hover { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; border-color: var(--border); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+button.danger { color: var(--ng); }
+button.danger:hover:not(:disabled) { border-color: var(--ng); }
+button.wide { width: 100%; padding: 12px; font-size: 15px; }
+label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+input[type="text"] {
+  width: 100%; background: var(--well); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 9px 12px; font: inherit; font-size: 15px;
+}
+input[type="text"]:focus { outline: none; border-color: var(--accent); }
+code { background: var(--well); padding: 4px 8px; border-radius: 4px; word-break: break-all; user-select: all; }
+.urls {
+  margin-top: 16px; padding: 8px 16px; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+}
+.urls .row, .secret .kv { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
+.urls .row + .row { border-top: 1px solid var(--border); }
+.urls .label, .secret .kv > span { color: var(--muted); min-width: 140px; }
+.urls button, .secret button { padding: 4px 10px; font-size: 12px; }
+.hint { margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.hint code { padding: 1px 5px; border-radius: 3px; }
+
+/* ---- ログイン・キー登録ページ ---- */
+.card {
+  max-width: 440px; margin: 8vh auto 0; padding: 28px 24px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+}
+.card h2 { margin: 0 0 8px; font-size: 20px; }
+.card p { margin: 0 0 16px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+.field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-bottom: 16px; }
+.msg { min-height: 1.6em; margin: 14px 0 0; font-size: 14px; line-height: 1.6; color: var(--muted); }
+.msg:empty { display: none; }
+.msg.error { color: var(--ng); }
+.msg.ok { color: var(--ok); }
+.card .msg { margin-bottom: 0; }
+
+/* ---- 設定ページ ---- */
+main.narrow { max-width: 760px; }
+.page-title { margin: 8px 0 0; font-size: 20px; }
+.panel { margin-top: 16px; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.panel h2 { margin: 0 0 6px; font-size: 16px; }
+.muted { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.list { list-style: none; margin: 12px 0; padding: 0; }
+.list li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.list li:last-child { border-bottom: 1px solid var(--border); }
+.list li.empty { color: var(--muted); font-size: 13px; }
+.list .info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.list .meta { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.list button { flex: none; padding: 6px 10px; font-size: 13px; }
+.badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; vertical-align: 1px;
+  background: rgba(79, 140, 255, .15); color: var(--accent); font-size: 11px; font-weight: normal;
+}
+.badge.warn { background: rgba(255, 92, 92, .15); color: var(--ng); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.row input[type="text"] { flex: 1 1 200px; width: auto; }
+.secret { margin-top: 12px; padding: 12px 14px; background: var(--well); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+.secret code { background: var(--panel); }
+.secret .muted { margin: 4px 0; }

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kasumin 設定</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='20' height='16' rx='4' fill='%234f8cff'/%3E%3Cpath d='M22 13l8-4v14l-8-4z' fill='%234f8cff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/kasumin.css">
+<script src="/static/auth.js" defer></script>
+<script src="/static/settings.js" defer></script>
+</head>
+<body>
+<header>
+  <h1><a href="/">Kasumin</a></h1>
+  <nav>
+    <a class="button" href="/">カメラに戻る</a>
+    <button id="btnLogout" type="button">ログアウト</button>
+  </nav>
+</header>
+<main class="narrow">
+  <h2 class="page-title">設定</h2>
+
+  <section class="panel">
+    <h2>パスキー・セキュリティキー</h2>
+    <p class="muted">ログインに使えるキーです。なくした端末やキーは削除してください (そのキーでログインしているセッションも切断されます)。</p>
+    <ul class="list" id="keys"></ul>
+    <div class="row">
+      <input id="newKeyName" type="text" maxlength="40" autocomplete="off" placeholder="追加するキーの名前 (例: iPhone、YubiKey)">
+      <button id="btnAddKey" class="primary" type="button">この端末でキーを追加</button>
+    </div>
+    <div class="row">
+      <button id="btnInvite" type="button">別の端末用の登録リンクを作成</button>
+    </div>
+    <div class="secret" id="inviteBox" hidden>
+      <p class="muted">登録したい端末でこの URL を開いてください (<span id="inviteExpires"></span> まで有効・1 回限り)。</p>
+      <div class="kv"><code id="inviteUrl"></code><button type="button" data-copy="inviteUrl">コピー</button></div>
+    </div>
+    <p class="msg" id="keyMsg" role="status"></p>
+  </section>
+
+  <section class="panel">
+    <h2>アクセストークン</h2>
+    <p class="muted">
+      VLC・OBS・Home Assistant など、パスキーでログインできないアプリ用のトークンです。
+      カメラの映像 (ストリーム・スナップショット) と状態の取得にだけ使え、設定は変更できません。
+    </p>
+    <ul class="list" id="tokens"></ul>
+    <div class="row">
+      <input id="newTokenName" type="text" maxlength="40" autocomplete="off" placeholder="使うアプリの名前 (例: Home Assistant)">
+      <button id="btnCreateToken" class="primary" type="button">発行</button>
+    </div>
+    <div class="secret" id="tokenBox" hidden>
+      <p class="muted"><strong>トークンはこの画面でしか表示されません。</strong>今すぐアプリに設定してください。</p>
+      <div class="kv"><span>トークン</span><code id="tokenValue"></code><button type="button" data-copy="tokenValue">コピー</button></div>
+      <div class="kv"><span>MJPEG ストリーム</span><code id="tokenStream"></code><button type="button" data-copy="tokenStream">コピー</button></div>
+      <div class="kv"><span>スナップショット</span><code id="tokenSnap"></code><button type="button" data-copy="tokenSnap">コピー</button></div>
+      <p class="muted">ユーザー名とパスワードを入力するアプリ (Home Assistant など) では、ユーザー名に任意の文字列、パスワードにトークンを入力しても使えます。</p>
+    </div>
+    <p class="msg" id="tokenMsg" role="status"></p>
+  </section>
+
+  <section class="panel">
+    <h2>ログイン中のセッション</h2>
+    <p class="muted">心当たりのないセッションがあればログアウトさせ、使われたキーを削除してください。</p>
+    <ul class="list" id="sessions"></ul>
+    <div class="row">
+      <button id="btnRevokeOthers" class="danger" type="button" disabled>このセッション以外をすべてログアウト</button>
+    </div>
+    <p class="msg" id="sessionMsg" role="status"></p>
+  </section>
+</main>
+</body>
+</html>

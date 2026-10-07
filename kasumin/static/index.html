@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kasumin カメラ</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='20' height='16' rx='4' fill='%234f8cff'/%3E%3Cpath d='M22 13l8-4v14l-8-4z' fill='%234f8cff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --border: #262b36;
+    --text: #e6e8ee; --muted: #8b93a7; --accent: #4f8cff;
+    --ok: #3ddc84; --ng: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ng); box-shadow: 0 0 8px var(--ng); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .stats { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+  main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+  .viewer { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; }
+  .viewer img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .viewer:fullscreen { border-radius: 0; }
+  .overlay {
+    position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; padding: 16px; background: rgba(0, 0, 0, .75); color: var(--muted); text-align: center;
+  }
+  .overlay.show { display: flex; }
+  .overlay strong { color: var(--text); font-size: 18px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  button, select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; font-size: 14px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+  .urls {
+    margin-top: 16px; padding: 8px 16px; font-size: 13px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .urls .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; }
+  .urls .row + .row { border-top: 1px solid var(--border); }
+  .urls .label { color: var(--muted); min-width: 140px; }
+  .urls code { background: #0b0d12; padding: 4px 8px; border-radius: 4px; word-break: break-all; user-select: all; }
+  .urls button { padding: 4px 10px; font-size: 12px; }
+  .hint { margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .hint code { background: #0b0d12; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Kasumin</h1>
+  <span class="stats" id="stats">接続しています…</span>
+</header>
+<main>
+  <div class="viewer" id="viewer">
+    <img id="stream" alt="ライブ映像">
+    <div class="overlay" id="overlay">
+      <strong id="overlayTitle"></strong>
+      <span id="overlayText"></span>
+    </div>
+  </div>
+  <div class="controls">
+    <button id="btnPause" type="button">⏸ 一時停止</button>
+    <button id="btnReconnect" type="button">↻ 再接続</button>
+    <button id="btnSnap" type="button">📷 スナップショット保存</button>
+    <button id="btnFull" type="button">⛶ 全画面</button>
+    <label>FPS 上限
+      <select id="fpsSel">
+        <option value="">なし</option>
+        <option value="15">15</option>
+        <option value="10">10</option>
+        <option value="5">5</option>
+        <option value="2">2</option>
+        <option value="1">1</option>
+      </select>
+    </label>
+  </div>
+  <div class="urls">
+    <div class="row"><span class="label">MJPEG ストリーム</span><code id="urlStream"></code><button type="button" data-copy="urlStream">コピー</button></div>
+    <div class="row"><span class="label">スナップショット</span><code id="urlSnap"></code><button type="button" data-copy="urlSnap">コピー</button></div>
+    <div class="row"><span class="label">ステータス (JSON)</span><code id="urlStatus"></code><button type="button" data-copy="urlStatus">コピー</button></div>
+  </div>
+  <p class="hint">
+    ストリーム URL は VLC、OBS (メディアソース)、Home Assistant (MJPEG IP Camera) などからも直接開けます。
+    URL に <code>?fps=5</code> を付けると、そのクライアントへの配信レートを制限できます。
+  </p>
+</main>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const img = $("stream");
+  const viewer = $("viewer");
+  const overlay = $("overlay");
+  const dot = $("dot");
+  const stats = $("stats");
+  const btnPause = $("btnPause");
+  const fpsSel = $("fpsSel");
+  // 1x1 の透明 GIF。src を差し替えると進行中の MJPEG 受信が中断される
+  const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+  const POLL_MS = 2000;
+
+  let paused = false;      // ユーザー操作による一時停止
+  let hiddenPause = false; // タブが非表示のため自動停止中
+  let serverOnline = null; // null = 未確認
+  let retryTimer = null;
+  let fpsCap = "";
+  try { fpsCap = localStorage.getItem("kasumin.fps") || ""; } catch (e) { /* 使えない環境では無視 */ }
+  fpsSel.value = fpsCap;
+  if (fpsSel.value !== fpsCap) { fpsCap = ""; fpsSel.value = ""; }
+
+  function streamUrl() {
+    const url = new URL("stream", location.href);
+    if (fpsCap) url.searchParams.set("fps", fpsCap);
+    url.searchParams.set("_", Date.now());
+    return url.toString();
+  }
+  function connect() {
+    clearTimeout(retryTimer);
+    if (paused || hiddenPause) return;
+    img.src = streamUrl();
+  }
+  function disconnect() {
+    clearTimeout(retryTimer);
+    img.src = BLANK;
+  }
+  function scheduleRetry(ms) {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, ms);
+  }
+  function showOverlay(title, text) {
+    $("overlayTitle").textContent = title;
+    $("overlayText").textContent = text;
+    overlay.classList.add("show");
+  }
+  function hideOverlay() { overlay.classList.remove("show"); }
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function fmtUptime(sec) {
+    sec = Math.floor(sec || 0);
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return (d ? d + "日 " : "") + pad(h) + ":" + pad(m) + ":" + pad(sec % 60);
+  }
+
+  function render(s) {
+    dot.classList.toggle("on", !!s.opened);
+    const parts = [];
+    if (s.width && s.height) parts.push(s.width + "×" + s.height);
+    parts.push((s.fps || 0).toFixed(1) + " fps");
+    parts.push("視聴者 " + s.clients);
+    parts.push("稼働 " + fmtUptime(s.uptime));
+    stats.textContent = parts.join(" · ");
+    if (s.width && s.height) viewer.style.aspectRatio = s.width + " / " + s.height;
+    if (paused) {
+      showOverlay("一時停止中", "「再開」を押すと配信を再開します");
+    } else if (!s.opened) {
+      showOverlay("カメラ信号なし", s.error || (s.idle ? "カメラは待機中です" : "再接続しています…"));
+    } else {
+      hideOverlay();
+    }
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch("api/status", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const status = await res.json();
+      if (serverOnline === false) connect(); // サーバー復帰時はストリームを張り直す
+      serverOnline = true;
+      render(status);
+    } catch (e) {
+      serverOnline = false;
+      dot.classList.remove("on");
+      stats.textContent = "サーバーに接続できません";
+      showOverlay("サーバーに接続できません", "再接続しています…");
+    }
+  }
+
+  img.addEventListener("error", () => {
+    if (img.getAttribute("src") === BLANK || paused || hiddenPause) return;
+    scheduleRetry(2000);
+  });
+
+  btnPause.addEventListener("click", () => {
+    paused = !paused;
+    btnPause.textContent = paused ? "▶ 再開" : "⏸ 一時停止";
+    if (paused) {
+      disconnect();
+      showOverlay("一時停止中", "「再開」を押すと配信を再開します");
+    } else {
+      hideOverlay();
+      connect();
+    }
+  });
+  $("btnReconnect").addEventListener("click", () => {
+    paused = false;
+    btnPause.textContent = "⏸ 一時停止";
+    hideOverlay();
+    connect();
+  });
+  $("btnSnap").addEventListener("click", () => {
+    const t = new Date();
+    const a = document.createElement("a");
+    a.href = new URL("snapshot.jpg?_=" + Date.now(), location.href).toString();
+    a.download = "kasumin_" + t.getFullYear() + pad(t.getMonth() + 1) + pad(t.getDate())
+      + "_" + pad(t.getHours()) + pad(t.getMinutes()) + pad(t.getSeconds()) + ".jpg";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  $("btnFull").addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (viewer.requestFullscreen) viewer.requestFullscreen();
+  });
+  fpsSel.addEventListener("change", () => {
+    fpsCap = fpsSel.value;
+    try { localStorage.setItem("kasumin.fps", fpsCap); } catch (e) { /* 無視 */ }
+    connect();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (!paused) { hiddenPause = true; disconnect(); }
+    } else if (hiddenPause) {
+      hiddenPause = false;
+      connect();
+    }
+  });
+
+  // 他のアプリから使うための URL
+  const base = new URL(".", location.href).toString().replace(/\/$/, "");
+  $("urlStream").textContent = base + "/stream";
+  $("urlSnap").textContent = base + "/snapshot.jpg";
+  $("urlStatus").textContent = base + "/api/status";
+  document.querySelectorAll("button[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const target = $(btn.dataset.copy);
+      try {
+        await navigator.clipboard.writeText(target.textContent);
+        btn.textContent = "コピーしました";
+      } catch (e) {
+        // http:// での LAN アクセスではクリップボード API が使えないため、選択状態にして手動コピーしてもらう
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        btn.textContent = "選択しました";
+      }
+      setTimeout(() => { btn.textContent = "コピー"; }, 1500);
+    });
+  });
+
+  connect();
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

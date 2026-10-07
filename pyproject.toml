@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kasumin"
+version = "0.1.0"
+description = "Windows の Web カメラをブラウザから見られるネットワークカメラ (MJPEG) にする"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["opencv-python>=4.8"]
+
+[project.scripts]
+kasumin = "kasumin.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kasumin*"]
+
+[tool.setuptools.package-data]
+kasumin = ["static/*"]

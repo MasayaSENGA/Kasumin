@@ -77,7 +77,17 @@ class ParseCameraSpecTest(unittest.TestCase):
 class PlanCamerasTest(unittest.TestCase):
     def test_default_is_camera_0_without_tracking(self):
         # 1 台だけのときは従来どおり番号で開く (抜き差しの追跡はしない)
-        self.assertEqual(plan_cameras(None, DEVICES), [(0, {"name": "Integrated Webcam"})])
+        options = {"name": "Integrated Webcam", "key": "path:" + DEVICES[0].path}
+        self.assertEqual(plan_cameras(None, DEVICES), [(0, options)])
+
+    def test_settings_key_follows_the_device(self):
+        # 設定画面で変えた値の保存先。台数や番号が変わっても同じカメラに付くよう、接続先を優先する
+        plan = dict(plan_cameras(["1", "3"], DEVICES))
+        self.assertEqual(plan[1]["key"], "path:" + DEVICES[1].path)
+        self.assertEqual(plan[3]["key"], "name:OBS Virtual Camera")
+        self.assertEqual(dict(plan_cameras(["1"], DEVICES))[1]["key"], plan[1]["key"], "1 台でも同じキー")
+        twins = [VideoDevice(0, "Same", ""), VideoDevice(1, "Same", "")]
+        self.assertNotIn("key", dict(plan_cameras(["0"], twins))[0], "区別できなければ番号で覚える")
 
     def test_several_cameras_are_tracked_by_device_path(self):
         plan = plan_cameras(["0", "1"], DEVICES)

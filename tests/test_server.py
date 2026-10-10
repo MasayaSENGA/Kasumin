@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 from unittest import mock
 
 import cv2
@@ -17,6 +19,7 @@ import numpy as np
 
 from kasumin.camera import Camera, CameraSettings
 from kasumin.devices import VideoDevice
+from kasumin.preferences import CameraPreferences
 from kasumin.server import BOUNDARY, KasuminServer, split_camera_path
 
 
@@ -362,6 +365,68 @@ class DeviceTrackingTest(unittest.TestCase):
     def test_status_shows_name(self):
         self.assertEqual(Camera(CameraSettings(index=2, name="玄関")).status()["name"], "玄関")
         self.assertEqual(Camera(CameraSettings(index=2)).status()["name"], "カメラ 2")
+
+
+class CameraPreferencesTest(unittest.TestCase):
+    """設定画面で変えた名前と回転の保存。実カメラは開かない。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "cameras.json"
+
+    def camera(self, **settings):
+        return Camera(CameraSettings(**{"index": 1, "name": "C920", "rotate": 0, "key": "path:usb#b", **settings}))
+
+    def test_saved_values_are_applied_after_restart(self):
+        camera = self.camera()
+        CameraPreferences(self.path).update(camera, name="玄関", rotate=180)
+        self.assertEqual((camera.label, camera.settings.rotate), ("玄関", 180))
+
+        restarted = self.camera(index=0)  # 番号が変わっても接続先 (key) が同じなら同じカメラ
+        CameraPreferences(self.path).apply(restarted)
+        self.assertEqual((restarted.label, restarted.settings.rotate), ("玄関", 180))
+        other = self.camera(key="path:usb#c")
+        CameraPreferences(self.path).apply(other)
+        self.assertEqual(other.label, "C920")
+
+    def test_reset_restores_startup_values(self):
+        camera = self.camera(rotate=90)
+        preferences = CameraPreferences(self.path)
+        preferences.update(camera, name="玄関", rotate=180)
+        self.assertTrue(preferences.customized(camera))
+        preferences.reset(camera)
+        self.assertEqual((camera.label, camera.settings.rotate), ("C920", 90))
+        self.assertFalse(preferences.customized(camera))
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["cameras"], {})
+
+    def test_without_file_nothing_is_written(self):
+        camera = self.camera()
+        CameraPreferences().update(camera, name="玄関", rotate=270)
+        self.assertEqual(camera.settings.rotate, 270)
+        self.assertFalse(self.path.exists())
+
+    def test_broken_file_is_reported(self):
+        for text in ("{", '{"version": 1, "cameras": {"x": {"name": "a", "rotate": 45}}}', '{"version": 9}'):
+            self.path.write_text(text, encoding="utf-8")
+            with self.subTest(text), self.assertRaises(ValueError):
+                CameraPreferences(self.path)
+
+    def test_invalid_rotation_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.camera().configure(name="x", rotate=45)
+
+    def test_rotation_changes_the_live_picture(self):
+        camera = FakeCamera(CameraSettings(width=160, height=120))
+        camera.start()
+        try:
+            self.assertIsNotNone(camera.wait_for_frame(0, timeout=3))
+            camera.configure(name="", rotate=90)
+            seq = camera.wait_for_frame(camera.seq, timeout=3)[0]  # 変更前に撮り始めた 1 枚は読み飛ばす
+            result = camera.wait_for_frame(seq, timeout=3)
+            self.assertEqual(jpeg_size(result[1]), (120, 160))  # 縦長になる
+        finally:
+            camera.stop()
 
 
 class IdleReleaseTest(unittest.TestCase):

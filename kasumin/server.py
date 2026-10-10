@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
-from .camera import Camera
+from .camera import ROTATIONS, Camera
+from .preferences import CameraPreferences
 
 if TYPE_CHECKING:  # fido2 パッケージは FIDO2 認証を使うときだけ読み込む
     from .auth import Fido2Auth, Session
@@ -76,6 +77,8 @@ POST_ROUTES = {
     "/api/auth/tokens/delete": ("_api_delete_token", True),
     "/api/auth/sessions/delete": ("_api_delete_session", True),
     "/api/auth/sessions/delete-others": ("_api_delete_other_sessions", True),
+    "/api/cameras/update": ("_api_update_camera", True),
+    "/api/cameras/reset": ("_api_reset_camera", True),
 }
 
 MAX_BODY = 64 * 1024  # POST で受け付ける JSON の上限
@@ -118,6 +121,7 @@ class KasuminServer(ThreadingHTTPServer):
         *,
         fido2: Optional[Fido2Auth] = None,
         tls: Optional[TLSConfig] = None,
+        preferences: Optional[CameraPreferences] = None,
     ) -> None:
         if ":" in host:
             self.address_family = socket.AF_INET6
@@ -129,6 +133,8 @@ class KasuminServer(ThreadingHTTPServer):
         if len(self.cameras) != len(cameras):
             raise ValueError("同じ番号のカメラが重複しています")
         self.camera = cameras[0]
+        # 設定画面で変えたカメラの名前と回転の保存先 (省略時はメモリ上だけで、再起動すると元に戻る)
+        self.preferences = preferences if preferences is not None else CameraPreferences()
         self.auth = auth
         self.fido2 = fido2
         self.tls = tls
@@ -313,7 +319,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path == "/settings":
                 self._serve_file(AUTH_PAGES[path], HTML)
             elif path == "/api/auth/overview":
-                self._send_json(HTTPStatus.OK, fido2.overview(session))
+                self._send_json(HTTPStatus.OK, {**fido2.overview(session), "cameras": self._camera_settings()})
             else:
                 self._route(path, query, Principal(session=session))
         else:
@@ -499,6 +505,52 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _api_delete_other_sessions(self, body: dict, session: Optional[Session]) -> None:
         count = self.server.fido2.revoke_other_sessions(session)
         self._send_json(HTTPStatus.OK, {"count": count})
+
+    # ------------------------------------------------------------------ カメラの設定 (設定画面)
+
+    def _camera_settings(self) -> list[dict[str, Any]]:
+        preferences = self.server.preferences
+        return [
+            {
+                "id": c.id,
+                "name": c.label,
+                "rotate": c.settings.rotate,
+                "default_name": c.defaults["name"] or f"カメラ {c.id}",
+                "default_rotate": c.defaults["rotate"],
+                "customized": preferences.customized(c),
+            }
+            for c in self.server.cameras.values()
+        ]
+
+    def _requested_camera(self, body: dict) -> Camera:
+        from .auth import AuthError
+
+        camera_id = body.get("id")
+        camera = self.server.cameras.get(camera_id) if type(camera_id) is int else None  # True なども除く
+        if camera is None:
+            raise AuthError(404, "カメラが見つかりません")
+        return camera
+
+    def _api_update_camera(self, body: dict, session: Optional[Session]) -> None:
+        from .auth import AuthError, clean_name
+
+        camera = self._requested_camera(body)
+        name = clean_name(body.get("name"))
+        rotate = body.get("rotate")
+        if not name:
+            raise AuthError(400, "カメラの名前を入力してください")
+        if type(rotate) is not int or rotate not in ROTATIONS:
+            raise AuthError(400, "回転は 0・90・180・270 度のどれかを選んでください")
+        old = camera.label
+        self.server.preferences.update(camera, name=name, rotate=rotate)
+        log.info("カメラ「%s」の設定を変更しました (名前「%s」, 回転 %d°)", old, name, rotate)
+        self._send_json(HTTPStatus.OK, {"cameras": self._camera_settings()})
+
+    def _api_reset_camera(self, body: dict, session: Optional[Session]) -> None:
+        camera = self._requested_camera(body)
+        self.server.preferences.reset(camera)
+        log.info("カメラ「%s」の設定を起動時の値に戻しました", camera.label)
+        self._send_json(HTTPStatus.OK, {"cameras": self._camera_settings()})
 
     # ------------------------------------------------------------------ 各エンドポイント
 

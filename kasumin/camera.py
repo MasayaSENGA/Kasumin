@@ -29,6 +29,7 @@ _ROTATIONS = {
     180: cv2.ROTATE_180,
     270: cv2.ROTATE_90_COUNTERCLOCKWISE,
 }
+ROTATIONS = (0, *_ROTATIONS)  # 指定できる回転角度 (時計回り)
 
 # cv2.flip の flipCode: 1=左右反転, 0=上下反転, -1=両方
 _FLIPS = {"h": 1, "v": 0, "hv": -1}
@@ -56,6 +57,8 @@ class CameraSettings:
     # device_path があればそれで、なければ device_name で探す。どちらも空なら index のとおりに開く
     device_path: str = ""
     device_name: str = ""
+    # 設定画面で変えた名前・回転を保存するときの、カメラの識別子 (接続先など)。空ならカメラ番号で区別する
+    key: str = ""
 
 
 class Camera:
@@ -92,6 +95,8 @@ class Camera:
         self._total_frames = 0
         self._started_at = time.time()
         self._open_error: Optional[str] = None  # 直近に開けなかった理由 (キャプチャスレッドだけが使う)
+        # 起動オプションで決まった名前と回転。設定画面の「既定に戻す」でこの値に戻す
+        self.defaults = {"name": settings.name, "rotate": settings.rotate}
 
     @property
     def id(self) -> int:
@@ -101,6 +106,18 @@ class Camera:
     @property
     def label(self) -> str:
         return self.settings.name or f"カメラ {self.settings.index}"
+
+    @property
+    def key(self) -> str:
+        """設定画面で変えた値を保存するときの識別子。番号が入れ替わっても同じカメラに付くよう、接続先を優先する。"""
+        return self.settings.key or f"index:{self.settings.index}"
+
+    def configure(self, *, name: str, rotate: int) -> None:
+        """名前と回転を変える。回転は次に撮影するフレームから反映される。"""
+        if rotate not in ROTATIONS:
+            raise ValueError(f"回転は {ROTATIONS} のどれかです: {rotate!r}")
+        self.settings.name = name
+        self.settings.rotate = rotate
 
     # ------------------------------------------------------------------ 公開 API
 

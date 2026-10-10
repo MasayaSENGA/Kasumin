@@ -21,6 +21,16 @@
   <h2 class="page-title">設定</h2>
 
   <section class="panel">
+    <h2>カメラ</h2>
+    <p class="muted">
+      画面やログに表示する名前と、映像の向き (時計回りの回転) を変えられます。変更はすぐに映像に反映され、次回の起動時も使われます。
+      「既定に戻す」で起動時の設定 (起動オプションやカメラの機種名) に戻ります。
+    </p>
+    <ul class="list camera-list" id="cameras"></ul>
+    <p class="msg" id="cameraMsg" role="status"></p>
+  </section>
+
+  <section class="panel">
     <h2>パスキー・セキュリティキー</h2>
     <p class="muted">ログインに使えるキーです。なくした端末やキーは削除してください (そのキーでログインしているセッションも切断されます)。</p>
     <ul class="list" id="keys"></ul>

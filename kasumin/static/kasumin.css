@@ -126,6 +126,15 @@ main.narrow { max-width: 760px; }
 .badge.warn { background: rgba(255, 92, 92, .15); color: var(--ng); }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .row input[type="text"] { flex: 1 1 200px; width: auto; }
+.camera-list li { align-items: flex-start; flex-wrap: wrap; }
+.camera-list .thumb {
+  flex: none; width: 160px; aspect-ratio: 16 / 9; object-fit: contain;
+  background: #000; border: 1px solid var(--border); border-radius: 6px;
+}
+.camera-list .info { flex: 1 1 280px; }
+.camera-list .row { margin-top: 6px; }
+.camera-list .row input[type="text"] { flex: 1 1 160px; }
+.camera-list select { padding: 8px 10px; }
 .secret { margin-top: 12px; padding: 12px 14px; background: var(--well); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 .secret code { background: var(--panel); }
 .secret .muted { margin: 4px 0; }

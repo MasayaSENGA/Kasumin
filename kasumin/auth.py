@@ -13,7 +13,6 @@ import ipaddress
 import json
 import logging
 import math
-import os
 import secrets
 import sys
 import threading
@@ -40,6 +39,8 @@ from fido2.webauthn import (
     ResidentKeyRequirement,
     UserVerificationRequirement,
 )
+
+from .storage import write_json_atomic
 
 log = logging.getLogger(__name__)
 
@@ -276,20 +277,7 @@ class _Store:
             "credentials": [c.to_json() for c in self.credentials],
             "tokens": [asdict(t) for t in self.tokens],
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        for attempt in range(5):
-            try:
-                os.replace(tmp, self.path)
-                return
-            except PermissionError:
-                # Windows ではウイルス対策ソフトなどがファイルを開いている間、置き換えに失敗することがある
-                if attempt == 4:
-                    raise
-                time.sleep(0.1)
+        write_json_atomic(self.path, data)
 
 
 class Fido2Auth:

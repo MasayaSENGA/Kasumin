@@ -71,7 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="キーの PIN / 生体認証を必須にするか。preferred にすると PIN 未設定のセキュリティキーでもログインできる",
     )
     remote.add_argument(
-        "--data-dir", default=str(default_data_dir()), metavar="DIR", help="登録済みのキーとアクセストークンの保存先"
+        "--data-dir",
+        default=str(default_data_dir()),
+        metavar="DIR",
+        help="登録済みのキー・アクセストークンと、設定画面で変えたカメラの名前・回転の保存先",
     )
 
     cam = parser.add_argument_group("カメラ")
@@ -261,14 +264,20 @@ def plan_cameras(
     for index, options in specs:
         options = dict(options)
         device = by_index.get(index)
-        if device is not None and device.name:
-            if "name" not in options:
+        if device is not None:
+            unique_name = bool(device.name) and all_names[device.name] == 1
+            # 設定画面で変えた名前・回転は接続先で覚える (台数を増やしたり番号が入れ替わったりしても同じカメラに付く)
+            if device.path:
+                options["key"] = "path:" + device.path
+            elif unique_name:
+                options["key"] = "name:" + device.name
+            if device.name and "name" not in options:
                 # 同じ機種を 2 台つないだときは番号を付けて区別する
                 options["name"] = device.name if chosen_names[device.name] == 1 else f"{device.name} ({index})"
             if len(specs) > 1:
                 if device.path:
                     options["device_path"] = device.path
-                elif all_names[device.name] == 1:
+                elif unique_name:
                     options["device_name"] = device.name
         plan.append((index, options))
     return plan
@@ -498,7 +507,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     from .camera import Camera, CameraSettings
+    from .preferences import CameraPreferences
     from .server import KasuminServer
+
+    # 設定画面で変えたカメラの名前と回転 (起動オプションより優先する)
+    try:
+        preferences = CameraPreferences(Path(args.data_dir) / "cameras.json")
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 1
 
     # 全カメラ共通の設定。--camera "1,rotate=180" のような個別の指定で上書きする
     common = dict(
@@ -514,12 +531,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         idle_timeout=args.idle_timeout,
     )
     cameras = [Camera(CameraSettings(index=index, **{**common, **options})) for index, options in plan]
+    for camera in cameras:
+        preferences.apply(camera)
     auth = (args.user, args.password) if args.password else None
 
     for camera in cameras:
         camera.start()
     try:
-        server = KasuminServer(args.host, args.port, cameras, auth, fido2=fido2, tls=tls)
+        server = KasuminServer(
+            args.host, args.port, cameras, auth, fido2=fido2, tls=tls, preferences=preferences
+        )
     except OSError as exc:
         log.error("%s:%d で待ち受けできません: %s", args.host, args.port, exc)
         for camera in cameras:

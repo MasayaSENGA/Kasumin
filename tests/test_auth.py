@@ -33,6 +33,7 @@ from fido2.webauthn import (
 
 from kasumin.auth import Fido2Auth, parse_public_url
 from kasumin.camera import CameraSettings
+from kasumin.preferences import CameraPreferences
 from kasumin.server import BOUNDARY, KasuminServer
 from kasumin.tls import TLSConfig
 from test_server import FakeCamera, jpeg_size, wait_until
@@ -163,6 +164,7 @@ class Fido2ServerBase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.store_path = Path(tmp.name) / "auth.json"
+        self.preferences_path = Path(tmp.name) / "cameras.json"
         self.cameras = self.make_cameras()
         for camera in self.cameras:
             camera.start()
@@ -177,7 +179,10 @@ class Fido2ServerBase(unittest.TestCase):
     def start_server(self, **auth_options) -> None:
         self.auth = Fido2Auth(parse_public_url(self.public_url), self.store_path, **auth_options)
         self.addCleanup(self.auth.close)
-        self.server = KasuminServer("127.0.0.1", 0, self.cameras, fido2=self.auth, tls=self.tls_config())
+        self.preferences = CameraPreferences(self.preferences_path)
+        self.server = KasuminServer(
+            "127.0.0.1", 0, self.cameras, fido2=self.auth, tls=self.tls_config(), preferences=self.preferences
+        )
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -581,6 +586,78 @@ class MultiCameraFido2Test(Fido2ServerBase):
         cameras = browser.get("/api/status").json()["cameras"]
         self.assertEqual([(c["id"], c["name"]) for c in cameras], [(0, "リビング"), (2, "玄関")])
         self.assertEqual(jpeg_size(browser.get("/camera/2/snapshot.jpg").body), (320, 240))
+
+
+class CameraSettingsTest(Fido2ServerBase):
+    """設定画面からのカメラの名前と回転の変更。"""
+
+    def make_cameras(self) -> list[FakeCamera]:
+        return [
+            FakeCamera(CameraSettings(index=0, width=160, height=120, name="Integrated Webcam", key="path:usb#a")),
+            FakeCamera(CameraSettings(index=2, width=320, height=240, name="C920", rotate=90, key="path:usb#b")),
+        ]
+
+    def test_overview_lists_camera_settings(self):
+        browser, _ = self.setup_owner()
+        cameras = browser.get("/api/auth/overview").json()["cameras"]
+        self.assertEqual(
+            cameras[1],
+            {"id": 2, "name": "C920", "rotate": 90, "default_name": "C920", "default_rotate": 90, "customized": False},
+        )
+
+    def test_update_applies_immediately_and_is_saved(self):
+        browser, _ = self.setup_owner()
+        res = browser.post("/api/cameras/update", {"id": 0, "name": "  玄関\n", "rotate": 90})
+        self.assertEqual(res.status, 200, res.body)
+        self.assertEqual(res.json()["cameras"][0], {
+            "id": 0, "name": "玄関", "rotate": 90, "default_name": "Integrated Webcam", "default_rotate": 0,
+            "customized": True,
+        })
+        # 名前は状態にすぐ出て、回転は次のフレームから映像に反映される
+        self.assertEqual(browser.get("/api/status").json()["cameras"][0]["name"], "玄関")
+        self.assertTrue(wait_until(lambda: jpeg_size(browser.get("/snapshot.jpg").body) == (120, 160)))
+        saved = json.loads(self.preferences_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["cameras"], {"path:usb#a": {"name": "玄関", "rotate": 90}})
+
+    def test_reset_returns_to_startup_values(self):
+        browser, _ = self.setup_owner()
+        browser.post("/api/cameras/update", {"id": 2, "name": "ガレージ", "rotate": 0})
+        res = browser.post("/api/cameras/reset", {"id": 2})
+        self.assertEqual(res.status, 200)
+        self.assertEqual(res.json()["cameras"][1]["name"], "C920")
+        self.assertEqual(self.cameras[1].settings.rotate, 90)
+        self.assertFalse(res.json()["cameras"][1]["customized"])
+
+    def test_invalid_requests_are_rejected(self):
+        browser, _ = self.setup_owner()
+        cases = [
+            ({"id": 0, "name": "", "rotate": 0}, 400),
+            ({"id": 0, "name": "x", "rotate": 45}, 400),
+            ({"id": 0, "name": "x", "rotate": 90.0}, 400),
+            ({"id": 0, "name": "x", "rotate": True}, 400),
+            ({"id": 0, "name": None, "rotate": 0}, 400),
+            ({"id": 7, "name": "x", "rotate": 0}, 404),
+            ({"id": "0", "name": "x", "rotate": 0}, 404),
+            ({"id": True, "name": "x", "rotate": 0}, 404),
+        ]
+        for body, status in cases:
+            with self.subTest(body):
+                self.assertEqual(browser.post("/api/cameras/update", body).status, status)
+        self.assertEqual(self.camera.label, "Integrated Webcam")
+        self.assertFalse(self.preferences_path.exists())
+
+    def test_changing_cameras_requires_login_and_same_origin(self):
+        body = {"id": 0, "name": "乗っ取り", "rotate": 180}
+        self.assertEqual(self.browser().post("/api/cameras/update", body).status, 401)
+        browser, _ = self.setup_owner()
+        token = browser.post("/api/auth/tokens/create", {"name": "VLC"}).json()["token"]
+        res = Browser(self.port, self.origin).request(
+            "POST", "/api/cameras/update", body=body, headers={"Authorization": f"Bearer {token}", "Origin": self.origin}
+        )
+        self.assertEqual(res.status, 401, "アクセストークンでは設定を変えられない")
+        res = browser.request("POST", "/api/cameras/update", body=body, headers={"Origin": "https://evil.example.test"})
+        self.assertEqual(res.status, 403)
+        self.assertEqual(self.camera.label, "Integrated Webcam")
 
 
 class LocalhostTest(Fido2ServerBase):

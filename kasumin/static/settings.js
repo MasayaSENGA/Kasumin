@@ -1,4 +1,4 @@
-// 設定ページ: キー・アクセストークン・セッションの管理
+// 設定ページ: カメラの名前と回転、キー・アクセストークン・セッションの管理
 (function () {
   "use strict";
   const A = window.KasuminAuth;
@@ -102,12 +102,102 @@
     $("btnRevokeOthers").disabled = data.sessions.length <= 1;
   }
 
+  // ------------------------------------------------------------------ カメラの名前と回転
+
+  const ROTATIONS = [[0, "回転なし"], [90, "時計回りに 90°"], [180, "180° (上下逆さま)"], [270, "反時計回りに 90°"]];
+  let camerasShown = false;
+
+  function rotationLabel(value) {
+    const found = ROTATIONS.find(([v]) => v === value);
+    return found ? found[1] : value + "°";
+  }
+
+  function cameraItem(c) {
+    const thumb = document.createElement("img");
+    thumb.className = "thumb";
+    thumb.alt = c.name + " のプレビュー";
+    thumb.src = "/camera/" + c.id + "/snapshot.jpg?_=" + Date.now();
+
+    const title = document.createElement("strong");
+    title.textContent = c.name;
+    const detail = document.createElement("div");
+    detail.className = "meta";
+    detail.textContent = "番号 " + c.id + " · 起動時の設定: 「" + c.default_name + "」・" + rotationLabel(c.default_rotate);
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.maxLength = 40;
+    name.value = c.name;
+    name.setAttribute("aria-label", c.name + " の名前");
+    const rotate = document.createElement("select");
+    rotate.setAttribute("aria-label", c.name + " の回転");
+    for (const [value, text] of ROTATIONS) rotate.append(new Option(text, String(value), false, value === c.rotate));
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "primary";
+    save.textContent = "保存";
+    save.disabled = true;
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "既定に戻す";
+    reset.disabled = !c.customized;
+
+    // 変更があるときだけ保存できるようにする
+    const changed = () => { save.disabled = name.value.trim() === c.name && Number(rotate.value) === c.rotate; };
+    name.addEventListener("input", changed);
+    rotate.addEventListener("change", changed);
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !save.disabled) save.click();
+    });
+    save.addEventListener("click", () => updateCamera(c, { name: name.value, rotate: Number(rotate.value) }, [save, reset]));
+    reset.addEventListener("click", () => resetCamera(c, [save, reset]));
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.append(name, rotate, save, reset);
+    const info = document.createElement("div");
+    info.className = "info";
+    info.append(title, ...(c.customized ? [badge("設定画面で変更済み")] : []), detail, row);
+    const li = document.createElement("li");
+    li.append(thumb, info);
+    return li;
+  }
+
+  function renderCameras(cameras) {
+    $("cameras").replaceChildren(...cameras.map(cameraItem));
+  }
+
+  async function changeCamera(path, body, buttons, done) {
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      const res = await A.api(path, body);
+      renderCameras(res.cameras); // プレビューも撮り直すので、回転の結果をその場で確かめられる
+      const c = res.cameras.find((x) => x.id === body.id);
+      show("cameraMsg", done(c ? c.name : ""), "ok");
+    } catch (e) {
+      fail("cameraMsg", e);
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+  function updateCamera(c, values, buttons) {
+    changeCamera("/api/cameras/update", { id: c.id, name: values.name, rotate: values.rotate }, buttons,
+      (name) => "「" + name + "」の設定を保存しました");
+  }
+  function resetCamera(c, buttons) {
+    changeCamera("/api/cameras/reset", { id: c.id }, buttons, (name) => "「" + name + "」を起動時の設定に戻しました");
+  }
+
   async function load() {
     try {
       data = await A.api("/api/auth/overview");
     } catch (e) {
       fail("keyMsg", e);
       return;
+    }
+    // カメラ欄は入力途中の内容を消さないよう、最初とカメラの設定を変えたときだけ作り直す
+    if (!camerasShown) {
+      renderCameras(data.cameras || []);
+      camerasShown = true;
     }
     renderKeys();
     renderTokens();

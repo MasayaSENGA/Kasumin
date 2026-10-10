@@ -13,6 +13,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from .devices import directshow_devices
+
 log = logging.getLogger(__name__)
 
 # OpenCV のキャプチャバックエンド。Windows では DirectShow が最も安定して速く開ける。
@@ -49,10 +51,15 @@ class CameraSettings:
     reconnect_delay: float = 3.0
     idle_timeout: float = 0.0
     read_failure_limit: int = 15
+    name: str = ""  # 画面とログに出す名前 (空なら「カメラ <番号>」)
+    # 複数台のとき、抜き差しでカメラ番号がずれても同じカメラを開くための識別情報 (DirectShow のみ)。
+    # device_path があればそれで、なければ device_name で探す。どちらも空なら index のとおりに開く
+    device_path: str = ""
+    device_name: str = ""
 
 
 class Camera:
-    """バックグラウンドでカメラを読み続け、最新フレームを配信する。
+    """バックグラウンドでカメラを読み続け、最新フレームを配信する。カメラ 1 台につき 1 つ作る。
 
     - キャプチャは 1 本のスレッドで行い、視聴者が何人いてもカメラは 1 回しか開かない。
     - JPEG エンコードは要求されたときに 1 フレームにつき 1 回だけ行い、結果を全クライアントで共有する。
@@ -81,8 +88,19 @@ class Camera:
         self._capture_size = (0, 0)
         self._capture_fps = 0.0
         self._backend_used = ""
+        self._device_index = settings.index
         self._total_frames = 0
         self._started_at = time.time()
+        self._open_error: Optional[str] = None  # 直近に開けなかった理由 (キャプチャスレッドだけが使う)
+
+    @property
+    def id(self) -> int:
+        """URL (/camera/<id>/...) で使う番号。起動時に指定したカメラ番号で、抜き差しで番号がずれても変わらない。"""
+        return self.settings.index
+
+    @property
+    def label(self) -> str:
+        return self.settings.name or f"カメラ {self.settings.index}"
 
     # ------------------------------------------------------------------ 公開 API
 
@@ -170,11 +188,13 @@ class Camera:
             times = list(self._frame_times)
             frame = self._frame
             data = {
+                "id": self.id,
+                "name": self.label,
                 "opened": self._opened,
                 "idle": self._idle,
                 "error": self._error,
                 "backend": self._backend_used,
-                "camera_index": self.settings.index,
+                "camera_index": self._device_index,
                 "capture_width": self._capture_size[0],
                 "capture_height": self._capture_size[1],
                 "capture_fps": round(self._capture_fps, 2),
@@ -211,7 +231,7 @@ class Camera:
 
             cap = self._open()
             if cap is None:
-                self._set_state(opened=False, error=f"カメラ {s.index} を開けません")
+                self._set_state(opened=False, error=self._open_error or f"「{self.label}」を開けません")
                 self._publish(self._placeholder("NO SIGNAL", f"camera {s.index} not available"), real=False)
                 self._stop.wait(s.reconnect_delay)
                 continue
@@ -221,7 +241,7 @@ class Camera:
                 self._capture_loop(cap)
             finally:
                 cap.release()
-                log.info("カメラ %d を解放しました", s.index)
+                log.info("「%s」を解放しました", self.label)
         self._set_state(opened=False)
 
     def _capture_loop(self, cap: cv2.VideoCapture) -> None:
@@ -229,13 +249,13 @@ class Camera:
         failures = 0
         while not self._stop.is_set():
             if s.idle_timeout > 0 and not self._has_demand():
-                log.info("視聴者がいないためカメラを解放します (idle_timeout=%.0fs)", s.idle_timeout)
+                log.info("視聴者がいないため「%s」を解放します (idle_timeout=%.0fs)", self.label, s.idle_timeout)
                 return
             ok, frame = cap.read()
             if not ok or frame is None:
                 failures += 1
                 if failures >= s.read_failure_limit:
-                    log.warning("フレーム取得に連続 %d 回失敗しました。再接続します", failures)
+                    log.warning("「%s」からのフレーム取得に連続 %d 回失敗しました。再接続します", self.label, failures)
                     self._set_state(opened=False, error="フレームを取得できません")
                     self._publish(self._placeholder("NO SIGNAL", "reconnecting..."), real=False)
                     self._stop.wait(s.reconnect_delay)
@@ -259,15 +279,45 @@ class Camera:
             if not opened:
                 self._frame_times.clear()
 
+    def _tracked(self) -> bool:
+        s = self.settings
+        return s.backend == "dshow" and bool(s.device_path or s.device_name)
+
+    def _resolve_index(self) -> Optional[int]:
+        """開くカメラ番号を決める。識別情報があれば今の番号を探し、接続されていなければ None。
+
+        Windows ではカメラを抜き差しすると番号が振り直されるので、番号のまま開くと別のカメラが映ってしまう。
+        """
+        s = self.settings
+        if not self._tracked():
+            return s.index
+        devices = directshow_devices()
+        if devices is None:  # 列挙できないときは指定の番号のまま開く
+            return s.index
+        for device in devices:
+            if (device.path == s.device_path) if s.device_path else (device.name == s.device_name):
+                return device.index
+        return None
+
     def _open(self) -> Optional[cv2.VideoCapture]:
         s = self.settings
-        # 指定バックエンドで開けなければ残りを順に試す
-        order = [s.backend] + [name for name in BACKENDS if name != s.backend]
+        self._open_error = None
+        index = self._resolve_index()
+        if index is None:
+            self._open_error = f"「{self.label}」が接続されていません"
+            return None
+        if index != self._device_index:
+            log.info("「%s」のカメラ番号が %d から %d に変わりました", self.label, self._device_index, index)
+            with self._cond:
+                self._device_index = index
+        # 指定バックエンドで開けなければ残りを順に試す。ただし識別情報で探した番号は DirectShow での並びなので、
+        # 並びが違う他のバックエンドでは別のカメラを開いてしまう恐れがあり、試さない
+        order = [s.backend] + ([] if self._tracked() else [name for name in BACKENDS if name != s.backend])
         for name in order:
-            cap = cv2.VideoCapture(s.index, BACKENDS[name])
+            cap = cv2.VideoCapture(index, BACKENDS[name])
             if not cap.isOpened():
                 cap.release()
-                log.debug("backend=%s ではカメラ %d を開けませんでした", name, s.index)
+                log.debug("backend=%s では「%s」(番号 %d) を開けませんでした", name, self.label, index)
                 continue
             if s.fourcc:
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*s.fourcc))
@@ -280,7 +330,7 @@ class Camera:
             ok, frame = cap.read()  # ウォームアップ(設定の反映と動作確認)
             if not ok or frame is None:
                 cap.release()
-                log.debug("backend=%s でカメラ %d からフレームを読めませんでした", name, s.index)
+                log.debug("backend=%s で「%s」(番号 %d) からフレームを読めませんでした", name, self.label, index)
                 continue
             width, height = frame.shape[1], frame.shape[0]
             fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -290,7 +340,9 @@ class Camera:
                 self._backend_used = name
             if name != s.backend:
                 log.warning("backend=%s では開けなかったため %s を使用します", s.backend, name)
-            log.info("カメラ %d を開きました (backend=%s, %dx%d, %.1f fps)", s.index, name, width, height, fps)
+            log.info(
+                "「%s」を開きました (番号 %d, backend=%s, %dx%d, %.1f fps)", self.label, index, name, width, height, fps
+            )
             return cap
         return None
 

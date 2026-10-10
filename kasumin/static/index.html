@@ -19,6 +19,8 @@
   </nav>
 </header>
 <main>
+  <div class="cams" id="camBar" role="tablist" aria-label="カメラ" hidden></div>
+  <div class="grid" id="grid" hidden></div>
   <div class="viewer" id="viewer">
     <img id="stream" alt="ライブ映像">
     <div class="overlay" id="overlay">
@@ -42,11 +44,10 @@
       </select>
     </label>
   </div>
-  <div class="urls">
-    <div class="row"><span class="label">MJPEG ストリーム</span><code id="urlStream"></code><button type="button" data-copy="urlStream">コピー</button></div>
-    <div class="row"><span class="label">スナップショット</span><code id="urlSnap"></code><button type="button" data-copy="urlSnap">コピー</button></div>
-    <div class="row"><span class="label">ステータス (JSON)</span><code id="urlStatus"></code><button type="button" data-copy="urlStatus">コピー</button></div>
-  </div>
+  <div class="urls" id="urls"></div>
+  <p class="hint" id="gridHint" hidden>
+    一覧では通信量を抑えるため、各カメラを最大 10 fps で表示します。カメラをクリックすると大きく表示します。
+  </p>
   <p class="hint">
     ストリーム URL は VLC、OBS (メディアソース)、Home Assistant (MJPEG IP Camera) などからも直接開けます。
     URL に <code>?fps=5</code> を付けると、そのクライアントへの配信レートを制限できます。

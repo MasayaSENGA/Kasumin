@@ -35,7 +35,7 @@ from kasumin.auth import Fido2Auth, parse_public_url
 from kasumin.camera import CameraSettings
 from kasumin.server import BOUNDARY, KasuminServer
 from kasumin.tls import TLSConfig
-from test_server import FakeCamera, wait_until
+from test_server import FakeCamera, jpeg_size, wait_until
 
 FLAG = AuthenticatorData.FLAG
 
@@ -163,16 +163,21 @@ class Fido2ServerBase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.store_path = Path(tmp.name) / "auth.json"
-        self.camera = FakeCamera(CameraSettings(width=160, height=120))
-        self.camera.start()
-        self.addCleanup(self.camera.stop)
+        self.cameras = self.make_cameras()
+        for camera in self.cameras:
+            camera.start()
+            self.addCleanup(camera.stop)
+        self.camera = self.cameras[0]
         self.origin = parse_public_url(self.public_url).origin
         self.start_server()
+
+    def make_cameras(self) -> list[FakeCamera]:
+        return [FakeCamera(CameraSettings(width=160, height=120))]
 
     def start_server(self, **auth_options) -> None:
         self.auth = Fido2Auth(parse_public_url(self.public_url), self.store_path, **auth_options)
         self.addCleanup(self.auth.close)
-        self.server = KasuminServer("127.0.0.1", 0, self.camera, fido2=self.auth, tls=self.tls_config())
+        self.server = KasuminServer("127.0.0.1", 0, self.cameras, fido2=self.auth, tls=self.tls_config())
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -540,6 +545,42 @@ class Fido2FlowTest(Fido2ServerBase):
         self.assertEqual(res.headers["X-Frame-Options"], "DENY")
         self.assertEqual(res.headers["X-Content-Type-Options"], "nosniff")
         self.assertIn("max-age=", res.headers["Strict-Transport-Security"])
+
+
+class MultiCameraFido2Test(Fido2ServerBase):
+    """複数のカメラでも、カメラごとの URL がログインかアクセストークンで保護されていること。"""
+
+    def make_cameras(self) -> list[FakeCamera]:
+        return [
+            FakeCamera(CameraSettings(index=0, width=160, height=120, name="リビング")),
+            FakeCamera(CameraSettings(index=2, width=320, height=240, name="玄関")),
+        ]
+
+    def test_camera_urls_require_authentication(self):
+        browser = self.browser()
+        for path in ("/camera/2/stream", "/camera/2/snapshot.jpg", "/camera/2/api/status", "/camera/7/stream"):
+            with self.subTest(path):
+                # 存在しない番号も 401 (ログイン前にはどのカメラがあるか分からない)
+                self.assertEqual(browser.get(path).status, 401)
+        res = browser.get("/camera/2/")
+        self.assertEqual((res.status, res.headers["Location"]), (303, "/login"))
+        self.assertEqual(self.camera.status()["clients"] + self.cameras[1].status()["clients"], 0)
+
+    def test_access_token_works_for_every_camera(self):
+        browser, _ = self.setup_owner()
+        token = browser.post("/api/auth/tokens/create", {"name": "Home Assistant"}).json()["token"]
+        res = self.app_get(f"/camera/2/snapshot.jpg?token={token}")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(jpeg_size(res.body), (320, 240))
+        self.assertEqual(jpeg_size(self.app_get(f"/snapshot.jpg?token={token}").body), (160, 120))
+        self.assertEqual(self.app_get(f"/camera/7/snapshot.jpg?token={token}").status, 404)
+        self.assertEqual(self.app_get(f"/camera/2/?token={token}").status, 303, "トークンでは視聴ページは開けない")
+
+    def test_logged_in_viewer_sees_all_cameras(self):
+        browser, _ = self.setup_owner()
+        cameras = browser.get("/api/status").json()["cameras"]
+        self.assertEqual([(c["id"], c["name"]) for c in cameras], [(0, "リビング"), (2, "玄関")])
+        self.assertEqual(jpeg_size(browser.get("/camera/2/snapshot.jpg").body), (320, 240))
 
 
 class LocalhostTest(Fido2ServerBase):

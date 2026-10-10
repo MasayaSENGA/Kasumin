@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
@@ -37,6 +37,8 @@ SNAPSHOT_PATHS = {"/snapshot", "/snapshot.jpg", "/image.jpg", "/jpg"}
 STATUS_PATH = "/api/status"
 # FIDO2 認証のとき、アプリがアクセストークンで取得できるもの (カメラの映像と状態だけ)
 MEDIA_PATHS = STREAM_PATHS | SNAPSHOT_PATHS | {STATUS_PATH}
+# 2 台目以降のカメラは /camera/<番号>/stream のように番号を前に付ける。番号なしの /stream などは 1 台目
+_CAMERA_PATH = re.compile(r"/camera/(\d{1,3})(/.*)?")
 
 # 配信するファイル: パス → static/ 内のファイル名 (と Content-Type)
 HTML = "text/html; charset=utf-8"
@@ -82,6 +84,14 @@ REVALIDATE_INTERVAL = 5.0  # ログアウトやトークン削除の後もスト
 _TOKEN_IN_QUERY = re.compile(r"(?i)(token=)[^&\s]*")
 
 
+def split_camera_path(path: str) -> tuple[Optional[int], str]:
+    """/camera/<番号>/<残り> を (番号, 残り) に分ける。番号が付いていなければ (None, path)。"""
+    match = _CAMERA_PATH.fullmatch(path)
+    if match is None:
+        return None, path
+    return int(match.group(1)), match.group(2) or "/"
+
+
 @dataclass
 class Principal:
     """FIDO2 認証で、リクエストを誰として扱うか (ブラウザのセッション、またはアプリのアクセストークン)。"""
@@ -103,7 +113,7 @@ class KasuminServer(ThreadingHTTPServer):
         self,
         host: str,
         port: int,
-        camera: Camera,
+        camera: Union[Camera, Sequence[Camera]],
         auth: Optional[tuple[str, str]] = None,
         *,
         fido2: Optional[Fido2Auth] = None,
@@ -111,7 +121,14 @@ class KasuminServer(ThreadingHTTPServer):
     ) -> None:
         if ":" in host:
             self.address_family = socket.AF_INET6
-        self.camera = camera
+        cameras = [camera] if isinstance(camera, Camera) else list(camera)
+        if not cameras:
+            raise ValueError("カメラが 1 台もありません")
+        # 番号 → カメラ (指定した順)。先頭のカメラは /stream など番号なしの URL でも見られる
+        self.cameras = {c.id: c for c in cameras}
+        if len(self.cameras) != len(cameras):
+            raise ValueError("同じ番号のカメラが重複しています")
+        self.camera = cameras[0]
         self.auth = auth
         self.fido2 = fido2
         self.tls = tls
@@ -234,14 +251,24 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _route(self, path: str, query: dict, principal: Optional[Principal]) -> None:
         if path in PAGES:
             self._serve_file(PAGES[path], HTML)
-        elif path in ASSETS:
+            return
+        if path in ASSETS:
             self._serve_file(*ASSETS[path])
-        elif path in STREAM_PATHS:
-            self._serve_stream(query, principal)
-        elif path in SNAPSHOT_PATHS:
-            self._serve_snapshot()
-        elif path == STATUS_PATH:
-            self._serve_status()
+            return
+        camera_id, rest = split_camera_path(path)
+        camera = self.server.camera if camera_id is None else self.server.cameras.get(camera_id)
+        if camera is None:
+            self._send_bytes(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Not Found")
+        elif rest in STREAM_PATHS:
+            self._serve_stream(camera, query, principal)
+        elif rest in SNAPSHOT_PATHS:
+            self._serve_snapshot(camera)
+        elif rest == STATUS_PATH:
+            self._serve_status(camera if camera_id is not None else None)
+        elif camera_id is not None and rest == "/":
+            # ブラウザで /camera/<番号>/ を開いたときは、視聴ページでそのカメラを表示する
+            location = {"Location": f"/#camera={camera.id}"}
+            self._send_bytes(HTTPStatus.SEE_OTHER, "text/plain; charset=utf-8", b"See Other", location)
         else:
             self._send_bytes(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Not Found")
 
@@ -290,7 +317,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             else:
                 self._route(path, query, Principal(session=session))
         else:
-            token = fido2.token(self._supplied_token(query)) if path in MEDIA_PATHS else None
+            media = split_camera_path(path)[1] in MEDIA_PATHS
+            token = fido2.token(self._supplied_token(query)) if media else None
             if token is not None:
                 self._route(path, query, Principal(token_id=token.id))
             else:
@@ -301,8 +329,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         headers = {}
         if self._cookie(fido2.cookie_name):
             headers["Set-Cookie"] = fido2.clear_cookie()  # 期限切れなどで無効になった Cookie を消す
-        if path in PAGES or path == "/settings":
-            headers["Location"] = "/login" if path in PAGES else f"/login?next={path}"
+        camera_id, rest = split_camera_path(path)
+        if path in PAGES or path == "/settings" or (camera_id is not None and rest == "/"):
+            headers["Location"] = f"/login?next={path}" if path == "/settings" else "/login"
             self._send_bytes(HTTPStatus.SEE_OTHER, "text/plain; charset=utf-8", b"Login required", headers)
             return
         # VLC や ffmpeg などはこの応答を受けて Basic 認証 (パスワード欄にアクセストークン) で接続し直す。
@@ -502,16 +531,23 @@ class RequestHandler(BaseHTTPRequestHandler):
         headers = PAGE_HEADERS if content_type == HTML else None
         self._send_bytes(HTTPStatus.OK, content_type, self.server.files[name], headers)
 
-    def _serve_status(self) -> None:
-        data = self.server.camera.status()
+    def _serve_status(self, camera: Optional[Camera]) -> None:
+        """camera を指定するとそのカメラだけ、省略すると全カメラ (cameras) の状態を返す。
+
+        全カメラのときも、1 台目の値を従来どおりの位置 (トップレベル) に入れる。
+        """
+        if camera is not None:
+            data = camera.status()
+        else:
+            data = self.server.camera.status()
+            data["cameras"] = [c.status() for c in self.server.cameras.values()]
         data["version"] = __version__
         data["auth"] = self.server.auth_mode != "none"
         data["auth_mode"] = self.server.auth_mode
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self._send_bytes(HTTPStatus.OK, "application/json; charset=utf-8", body)
 
-    def _serve_snapshot(self) -> None:
-        camera = self.server.camera
+    def _serve_snapshot(self, camera: Camera) -> None:
         camera.touch()
         # 必ず新しいフレームを待つ(アイドル解放中でもカメラが起きて撮影するまで待つ)
         result = camera.wait_for_frame(camera.seq, timeout=10.0) or camera.get_jpeg()
@@ -527,8 +563,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             {"Content-Disposition": 'inline; filename="snapshot.jpg"'},
         )
 
-    def _serve_stream(self, query: dict, principal: Optional[Principal]) -> None:
-        camera = self.server.camera
+    def _serve_stream(self, camera: Camera, query: dict, principal: Optional[Principal]) -> None:
         fps_cap = _float_param(query, "fps")
         min_interval = 1.0 / fps_cap if fps_cap and fps_cap > 0 else 0.0
 
@@ -540,13 +575,17 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        client = self._client_ip()
+        client = f"{self._client_ip()} →「{camera.label}」"
         count = camera.add_client()
         log.info("ストリーム開始 %s (視聴者 %d)", client, count)
         seq = 0
         last_sent = 0.0
         next_check = time.monotonic() + REVALIDATE_INTERVAL
+        delimiter = b"--" + BOUNDARY.encode() + b"\r\n"
         try:
+            # 区切りは各フレームの直後に送る (流れるバイト列は同じ)。ブラウザは次の区切りが届いた時点でフレームを
+            # 表示するので、区切りを次のフレームと一緒に送ると表示が 1 フレーム分 (fps を絞った配信では数秒) 遅れる
+            self.wfile.write(delimiter)
             while not camera.stopped:
                 if principal is not None and time.monotonic() >= next_check:
                     if not self._still_authorized(principal):
@@ -564,10 +603,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(
                     b"".join(
                         (
-                            b"--", BOUNDARY.encode(), b"\r\n",
                             b"Content-Type: image/jpeg\r\n",
                             b"Content-Length: ", str(len(jpeg)).encode(), b"\r\n\r\n",
                             jpeg, b"\r\n",
+                            delimiter,
                         )
                     )
                 )

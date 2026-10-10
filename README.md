@@ -269,17 +269,51 @@ PC のブラウザで開いた場合も、登録画面で「スマートフォ�
 
 ## ログオン時に自動起動する
 
-タスク スケジューラに登録する例(管理者権限は不要):
+Windows のタスク スケジューラに登録すると、サインインしたときに Kasumin がコンソール画面を出さずに起動します。
+登録する前に、次の 2 つを済ませておいてください。
 
-```bat
-schtasks /Create /TN Kasumin /SC ONLOGON /TR "\"C:\path\to\Kasumin\start.bat\" --password himitsu"
+- 一度 `start.bat` をコンソールで実行し、問題なく起動することを確かめる(依存パッケージのインストールもこのとき行われます)。
+  FIDO2 認証を使う場合は、このときに最初のキーも登録しておきます(コンソールを出さない起動では登録リンクが見えないため)
+- 確認に使ったコンソールの Kasumin は Ctrl+C で終了させる(二重に起動すると、ポートとキーの保存先が使用中で 2 つ目が起動できません)
+
+PowerShell (管理者権限は不要) で次を実行します。`C:\path\to\Kasumin` は Kasumin を置いたフォルダに、
+`-Argument` の中は `start.bat` の後ろに付けていたオプションに置き換えてください。
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "C:\path\to\Kasumin\.venv\Scripts\pythonw.exe" -Argument "-m kasumin --host 127.0.0.1 --public-url https://cam.example.com --camera 0 --camera 1 --timestamp" -WorkingDirectory "C:\path\to\Kasumin"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName "Kasumin" -Action $action -Trigger $trigger -Settings $settings -Description "Kasumin ネットワークカメラ"
 ```
 
-コンソール画面を出したくない場合は `start.bat` の代わりに
-`"C:\path\to\Kasumin\.venv\Scripts\pythonw.exe" -m kasumin` を登録してください(ログは表示されません)。
+| 設定 | 理由 |
+| --- | --- |
+| `pythonw.exe` | コンソール画面を出さない Python。`start.bat` 経由だとコンソールが出るので直接起動する |
+| `-WorkingDirectory` | `-m kasumin` で Kasumin を読み込むために、Kasumin のフォルダで起動する |
+| `-ExecutionTimeLimit 0` | タスク スケジューラは既定で「3 日を超えたら停止」なので、上限をなくす(`schtasks /Create` で登録するとこの上限が付いたままになる) |
+| `-AllowStartIfOnBatteries` / `-DontStopIfGoingOnBatteries` | ノート PC がバッテリー駆動のときも起動し、途中で止めない |
+| `-RestartCount 3 -RestartInterval 1分` | タスクの開始に失敗したとき、1 分おきに 3 回まで試し直す |
 
-FIDO2 認証を使う場合は、先にコンソールで起動して最初のキーを登録してから、`--public-url` を付けたコマンドを登録してください
-(コンソールを出さない起動方法では登録リンクが見えないため)。
+登録したら、サインインし直さなくてもその場で起動して確かめられます。
+
+```powershell
+Start-ScheduledTask -TaskName "Kasumin"
+```
+
+止める・登録を削除するには次のようにします。
+
+```powershell
+Stop-ScheduledTask -TaskName "Kasumin"
+Unregister-ScheduledTask -TaskName "Kasumin" -Confirm:$false
+```
+
+注意:
+
+- 起動するのは Windows にサインインしたときです。停電などで PC が再起動したときも、サインインするまで配信されません
+- コンソールを出さない起動ではログが表示されません。動かないときは、タスクを止めてから `start.bat` を同じオプションでコンソール実行し、表示されるメッセージを確認してください
+- Kasumin を更新したあとは、一度 `start.bat` をコンソールで実行してください(依存パッケージが変わっていた場合にインストールされます)
+- キーをなくして登録リンクを表示したいときは、タスクを止めてからコンソールで `start.bat ... --setup-link` を実行します
+- Cloudflare Tunnel などを使っている場合は、そちらも自動起動しているか確認してください(`cloudflared` をサービスとしてインストールしていれば自動で起動します)
 
 ## セキュリティについて
 
